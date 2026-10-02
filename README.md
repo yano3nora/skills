@@ -7,6 +7,7 @@ macOS と Windows (git bash) の両方で使う。
 
 | skill | 内容 | 依存 |
 |---|---|---|
+| `chrome-connect` | chrome-devtools CLI をユーザの Chrome 本体へ接続する | Chrome 144 以上, `mise` または `chrome-devtools` CLI |
 | `gsheet` | Google Sheets のセルを読み書きする CLI と、その使い方 | `curl`, `jq`, `openssl`, サービスアカウントの鍵 JSON |
 | `show-me` | 図や擬似コードで今の話題を視覚化する | なし |
 | `why-me` | 変更案を価値・必要性・実装の順に問い詰める | なし |
@@ -29,6 +30,7 @@ cd ~/git/yano3nora/skills
 
 入れた後は Claude Code / Codex を再起動する。skill ごとの追加設定は各 `skills/<name>/README.md` を読む。
 
+- `chrome-connect`: Chrome 側で remote debugging を ON にする。手順は Agent が [SKILL.md](skills/chrome-connect/SKILL.md) の「前提」に沿って案内する
 - `gsheet`: 鍵 JSON の配置、Windows の PATH、macOS の sandbox 設定が要る。[skills/gsheet/README.md](skills/gsheet/README.md)
 
 ## Update
