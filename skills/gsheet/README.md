@@ -11,11 +11,18 @@ Agent 向けの使い方は `SKILL.md`。このファイルは人間向けのセ
 1. 管理者から鍵 JSON を受け取り、`~/.config/gsheet/key.json` に置く
     - Windows は `%USERPROFILE%\.config\gsheet\key.json`。git bash の `~` は `%USERPROFILE%` に解決される
     - 鍵は秘密鍵。チャットやメールで転送しない。受け取ったら元の共有先から消す
-2. Windows だけ: `%USERPROFILE%\.local\bin` をユーザー環境変数 PATH に足す。PowerShell で次を流し、git bash と PowerShell を開き直す
+2. `~/.local/bin` を PATH に通す。`install.sh` はここにコマンドを置く
+    - macOS: `echo "$PATH" | tr ':' '\n' | grep -x "$HOME/.local/bin"` で何も出なければ、`~/.zshrc` に次を足して shell を開き直す
 
-    ```powershell
-    [Environment]::SetEnvironmentVariable('Path', "$env:USERPROFILE\.local\bin;" + [Environment]::GetEnvironmentVariable('Path','User'), 'User')
-    ```
+        ```sh
+        export PATH="$HOME/.local/bin:$PATH"
+        ```
+
+    - Windows: ユーザー環境変数 PATH に `%USERPROFILE%\.local\bin` と mise の shims を足す。PowerShell で次を流し、git bash と PowerShell を開き直す。理由: PowerShell から `gsheet.cmd` を呼ぶ経路は `.bashrc` を読まないので、shims が PATH に無いと `jq` が見つからない。shims が既に入っていれば重複するだけで害は無い
+
+        ```powershell
+        [Environment]::SetEnvironmentVariable('Path', "$env:USERPROFILE\.local\bin;$env:LOCALAPPDATA\mise\shims;" + [Environment]::GetEnvironmentVariable('Path','User'), 'User')
+        ```
 
 3. macOS の Claude Code で sandbox を使っている場合だけ: `~/.claude/settings.json` に除外を足す。理由: sandbox は `googleapis.com` への通信を拒否する
 

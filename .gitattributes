@@ -1,0 +1,6 @@
+# Windows の core.autocrlf=true でも bash script を LF で checkout する。理由: CRLF の shebang は git bash で起動できない。
+* text=auto
+*.sh text eol=lf
+*.md text eol=lf
+skills/*/scripts/* text eol=lf
+*.cmd text eol=crlf
