@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# gsheet - Google Sheets のセルをサービスアカウントの鍵で読み書きする。
+# 出力は Sheets API の JSON をそのまま stdout に出す。理由: 利用者は Agent と jq なので整形層は要らない。
+# 認可はサービスアカウントの鍵 JSON だけ。既定は ~/.config/gsheet/key.json で、GOOGLE_APPLICATION_CREDENTIALS で上書きできる。gcloud は使わない。
+# 理由: 経路が 1 つなら Agent は迷わず、Windows でも SDK 無しで動く。
+# 初期設定は同じ skill の README.md を参照。
+# bash 3.2 で書く。理由: macOS の /bin/bash と Windows の git bash の両方で動かす。
+
+readonly API_BASE="https://sheets.googleapis.com/v4"
+readonly TOKEN_URL="https://oauth2.googleapis.com/token"
+readonly SA_SCOPE="https://www.googleapis.com/auth/spreadsheets"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  gsheet meta   <sheet>                          sheet 名と行列数の一覧
+  gsheet get    <sheet> <range>                  値を取得
+  gsheet set    <sheet> <range> [values]         range を上書き (USER_ENTERED)
+  gsheet append <sheet> <range> [values]         末尾に行を追加 (USER_ENTERED)
+  gsheet api    <METHOD> <path> [body]           生 API。path は v4/ 以下 (例: spreadsheets/<id>:batchUpdate)
+
+  <sheet>   spreadsheet の URL か ID
+  <range>   'Sheet1!A1:C10' 形式。sheet 名は日本語でもよい
+  values    2 次元配列の JSON。例: '[["a","b"],["c","d"]]'。数式は "=SUM(A1:A3)" の文字列で渡す
+            values / body を省略すると stdin から読む。@<file> でファイルから読む (Windows の Codex 向け)
+
+Example:
+  gsheet meta https://docs.google.com/spreadsheets/d/<id>/edit
+  gsheet get <id> 'Sheet1!A1:C10'
+  gsheet set <id> 'Sheet1!B5' '[["Completed"]]'
+  gsheet append <id> 'Sheet1!A:C' '[["a","b","c"]]'
+  gsheet set <id> 'Sheet1!A2' @values.json
+  gsheet api POST spreadsheets/<id>:batchUpdate '{"requests":[...]}'
+USAGE
+}
+
+die() {
+  printf '❌ %s\n' "$*" >&2
+  exit 1
+}
+
+# URL でも ID でも受ける。理由: ユーザはブラウザの URL をそのまま貼る。
+# 正規表現は変数に置く。理由: bash は [[ =~ ]] の右辺を引用符で囲むと文字列一致になる。
+sheet_id() {
+  local input="$1"
+  local url_re='/spreadsheets/d/([A-Za-z0-9_-]+)'
+  local id_re='^[A-Za-z0-9_-]+$'
+  if [[ "$input" =~ $url_re ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  elif [[ "$input" =~ $id_re ]]; then
+    printf '%s' "$input"
+  else
+    die "spreadsheet の URL か ID を指定する: $input"
+  fi
+}
+
+# range は path に入るので、'!' や日本語 sheet 名をエンコードする。
+# -b を付ける。理由: Windows 版 jq は CRLF を出し、$(...) は LF しか除かないので URL に CR が残る。
+uri_encode() {
+  jq -rbn --arg s "$1" '$s | @uri'
+}
+
+# 既定は固定パス。理由: Windows でも git bash の $HOME は %USERPROFILE% なので、環境変数の設定なしで Codex から読める。
+# 環境変数は別の鍵を一時的に使うための上書きに限る。shell 全体に立てると他の Google SDK もこの鍵を使う。
+readonly DEFAULT_KEY_FILE="$HOME/.config/gsheet/key.json"
+
+sa_key_file() {
+  printf '%s' "${GOOGLE_APPLICATION_CREDENTIALS:-$DEFAULT_KEY_FILE}"
+}
+
+# 鍵が無いときは直すべき場所を 1 行で返す。理由: 初見の Agent がこの文を読み、ユーザに鍵 JSON の配置を依頼できる。
+# 環境変数で上書き中は既定パスへの配置を案内しない。理由: 置いても環境変数が優先され、失敗が続く。
+# ${key_file} と書く。理由: bash 3.2 は直後の全角文字を変数名の一部と読む。
+require_auth() {
+  local key_file
+  key_file="$(sa_key_file)"
+  if [[ ! -r "$key_file" ]]; then
+    if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
+      die "GOOGLE_APPLICATION_CREDENTIALS が指す鍵 JSON を読めない: ${key_file}。パスを直すか、変数を外して ~/.config/gsheet/key.json を使う"
+    fi
+    die "鍵 JSON が無い: ${key_file}。サービスアカウントの鍵 JSON をそこに置く。手順: gsheet skill の README.md"
+  fi
+  command -v openssl >/dev/null 2>&1 || die "openssl が無い"
+}
+
+base64url() {
+  openssl base64 -A | tr '+/' '-_' | tr -d '='
+}
+
+# サービスアカウントの鍵で JWT を署名し、access token に交換する。理由: scope を spreadsheets だけに絞る。
+# token は 1 時間有効だが cache しない。理由: 呼び出しごとの往復 1 回で足りる。
+# jq に -b を付ける。理由: Windows 版 jq の CR が iss や token に混ざる。
+# 秘密鍵は 600 の一時ファイルで openssl に渡す。理由: git bash の openssl は native 版で、プロセス置換の /dev/fd を読めない。
+# JWT は stdin で curl に渡す。理由: プロセス引数は他のプロセスから見える。
+sa_access_token() {
+  local key_file email now header claims unsigned signature response token key_tmp
+  key_file="$(sa_key_file)"
+  email="$(jq -rb 'select(.type == "service_account") | .client_email // empty' "$key_file" 2>/dev/null)" \
+    || die "鍵 JSON を parse できない: $key_file"
+  [[ -n "$email" ]] || die "サービスアカウントの鍵 JSON ではない: $key_file"
+  now="$(date +%s)"
+  header='{"alg":"RS256","typ":"JWT"}'
+  claims="$(jq -cbn --arg iss "$email" --arg scope "$SA_SCOPE" --arg aud "$TOKEN_URL" --argjson iat "$now" \
+    '{iss: $iss, scope: $scope, aud: $aud, iat: $iat, exp: ($iat + 3600)}')"
+  unsigned="$(printf '%s' "$header" | base64url).$(printf '%s' "$claims" | base64url)"
+  key_tmp="$(umask 077 && mktemp "${TMPDIR:-/tmp}/gsheet-key.XXXXXX")" || die "一時ファイルを作れない"
+  # 定義時に展開する。理由: EXIT trap は関数の外で走り、local の key_tmp は set -u で未定義になる。
+  trap "rm -f '$key_tmp'" EXIT
+  jq -rb '.private_key' "$key_file" > "$key_tmp"
+  signature="$(printf '%s' "$unsigned" | openssl dgst -sha256 -sign "$key_tmp" | base64url)" \
+    || die "JWT の署名に失敗した。鍵 JSON の private_key を確認する"
+  rm -f "$key_tmp"
+  response="$(printf '%s' "$unsigned.$signature" | curl -sS --fail-with-body -X POST \
+    --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer' \
+    --data-urlencode 'assertion@-' \
+    "$TOKEN_URL")" || die "token の取得に失敗した: $response"
+  token="$(printf '%s' "$response" | jq -rb '.access_token // empty')"
+  [[ -n "$token" ]] || die "token の取得に失敗した: $response"
+  printf '%s' "$token"
+}
+
+# json_input <argc> <arg>: 引数があればそれを、無ければ stdin を返す。
+# 有無は文字数ではなく個数で判定する。理由: 明示した '' を stdin 読みに化けさせない。
+# Agent は引数で渡す。理由: sandbox 除外 (excludedCommands) はリダイレクトやヒアストリングが付くと一致しない。
+# 空白だけも弾く。理由: Agent の Bash は stdin が常に非 tty で、-t 0 では検出できない。
+# @<file> はファイルを読む。理由: Windows の Codex は PowerShell → cmd → bash と経由し、JSON を引数で渡すと引用符が壊れる。
+# 先頭の UTF-8 BOM は除く。理由: Windows のツールは BOM 付きで書くことがあり、jq が parse に失敗する。
+json_input() {
+  local input
+  if (( $1 >= 3 )); then
+    input="$2"
+    if [[ "$input" == @?* ]]; then
+      local file="${input#@}"
+      input="$(cat "$file" 2>/dev/null)" || die "ファイルを読めない: $file"
+      input="${input#$'\xEF\xBB\xBF'}"
+    fi
+  else
+    input="$(cat)"
+  fi
+  [[ -n "${input//[[:space:]]/}" ]] || die "JSON を引数か stdin で渡す"
+  printf '%s' "$input"
+}
+
+# values_body <argc> <arg>: values を 2 次元配列として検証し、Sheets API の values 形式に包む。
+# || exit 1 を付ける。理由: bash 3.2 は $(...) の中で set -e が効かず、die が subshell しか終了させない。
+values_body() {
+  local input body
+  input="$(json_input "$1" "${2:-}")" || exit 1
+  body="$(printf '%s' "$input" \
+    | jq -c 'if type == "array" and all(type == "array") then {values: .} else error("not a 2D array") end' 2>/dev/null)" \
+    || die "values が JSON の 2 次元配列ではない"
+  [[ -n "$body" ]] || die "values が JSON の 2 次元配列ではない"
+  printf '%s' "$body"
+}
+
+# call <METHOD> <api_path> [body]
+# --fail-with-body: エラー時も API の JSON を stdout に出し、非 0 で終了する。
+# 空配列の展開は ${arr[@]+"${arr[@]}"} と書く。理由: bash 3.2 は set -u で空配列の展開を unbound と扱う。
+# 割り当て先 project の header は送らない。理由: 割り当て先は鍵の project に決まり、header を送ると別途 IAM が要る。
+call() {
+  local method="$1"
+  local api_path="$2"
+  local body="${3:-}"
+  local token
+  token="$(sa_access_token)" || exit 1
+
+  local -a extra_args=()
+  if [[ -n "$body" ]]; then
+    extra_args=(--data-binary "$body")
+  fi
+
+  curl -sS --fail-with-body -X "$method" \
+    -H "Authorization: Bearer $token" \
+    -H "Content-Type: application/json" \
+    ${extra_args[@]+"${extra_args[@]}"} \
+    "$API_BASE/$api_path"
+  printf '\n'
+}
+
+main() {
+  if [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" || "$1" == "help" ]]; then
+    usage
+    return 0
+  fi
+
+  local cmd="$1"
+  shift
+
+  # require_auth は入力処理より先に呼ぶ。理由: 鍵が無いまま stdin 待ちや JSON エラーにならず、配置手順を先に返す。
+  case "$cmd" in
+    meta)
+      [[ $# -eq 1 ]] || { usage >&2; return 1; }
+      require_auth
+      local id
+      id="$(sheet_id "$1")"
+      call GET "spreadsheets/$id?fields=properties.title,sheets.properties(title,sheetId,index,gridProperties(rowCount,columnCount))"
+      ;;
+    get)
+      [[ $# -eq 2 ]] || { usage >&2; return 1; }
+      require_auth
+      local id range
+      id="$(sheet_id "$1")"
+      range="$(uri_encode "$2")"
+      call GET "spreadsheets/$id/values/$range"
+      ;;
+    set)
+      [[ $# -eq 2 || $# -eq 3 ]] || { usage >&2; return 1; }
+      require_auth
+      local id range body
+      id="$(sheet_id "$1")"
+      range="$(uri_encode "$2")"
+      body="$(values_body $# "${3:-}")"
+      call PUT "spreadsheets/$id/values/$range?valueInputOption=USER_ENTERED" "$body"
+      ;;
+    append)
+      [[ $# -eq 2 || $# -eq 3 ]] || { usage >&2; return 1; }
+      require_auth
+      local id range body
+      id="$(sheet_id "$1")"
+      range="$(uri_encode "$2")"
+      body="$(values_body $# "${3:-}")"
+      call POST "spreadsheets/$id/values/${range}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS" "$body"
+      ;;
+    api)
+      [[ $# -eq 2 || $# -eq 3 ]] || { usage >&2; return 1; }
+      require_auth
+      local method api_path="$2" body=""
+      method="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+      # GET は body なし。引数 3 つで渡すか、stdin にあれば JSON として送る。
+      if (( $# == 3 )); then
+        body="$(json_input $# "$3" | jq -c . 2>/dev/null)" || die "body が JSON ではない"
+        [[ -n "$body" ]] || die "body が JSON ではない"
+      elif [[ ! -t 0 ]]; then
+        local raw
+        raw="$(cat)"
+        if [[ -n "${raw//[[:space:]]/}" ]]; then
+          body="$(printf '%s' "$raw" | jq -c . 2>/dev/null)" || die "body が JSON ではない"
+          [[ -n "$body" ]] || die "body が JSON ではない"
+        fi
+      fi
+      call "$method" "$api_path" "$body"
+      ;;
+    *)
+      usage >&2
+      return 1
+      ;;
+  esac
+}
+
+main "$@"

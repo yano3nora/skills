@@ -1,0 +1,3 @@
+# Codex 版の disable-model-invocation。$why-me で明示起動したときだけ読み込ませる。
+policy:
+  allow_implicit_invocation: false
