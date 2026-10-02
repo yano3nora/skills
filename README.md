@@ -1,4 +1,4 @@
-# agent-skills
+# skills
 
 Claude Code と Codex で共用する [Agent Skills](https://agentskills.io) 置き場。
 macOS と Windows (git bash) の両方で使う。
@@ -16,8 +16,8 @@ macOS と Windows (git bash) の両方で使う。
 前提: git、mise 経由の `jq`。Windows は git bash で流す。
 
 ```sh
-git clone https://github.com/yano3nora/agent-skills.git ~/git/yano3nora/agent-skills
-cd ~/git/yano3nora/agent-skills
+git clone https://github.com/yano3nora/skills.git ~/git/yano3nora/skills
+cd ~/git/yano3nora/skills
 ./install.sh            # 全部入れる。./install.sh gsheet のように絞れる
 ```
 
@@ -34,7 +34,7 @@ cd ~/git/yano3nora/agent-skills
 ## Update
 
 ```sh
-cd ~/git/yano3nora/agent-skills
+cd ~/git/yano3nora/skills
 git pull
 ./install.sh
 ```
