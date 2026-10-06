@@ -47,6 +47,11 @@ gsheet api    POST spreadsheets/<id>:batchUpdate '{"requests":[...]}'
         - 理由: 引数の JSON は PowerShell → cmd → bash で引用符が壊れる。先頭の `@` は PowerShell の splatting なので引用符で囲む
     - `<sheet>` は URL ではなく ID を渡す。引数に `&` を入れない。理由: cmd が `&` をコマンド区切りと解釈する
     - 日本語をコマンド引数に入れない。range の sheet 名だけは可
+- 通信は 60 秒で打ち切り、`curl: (28)` で終了する。理由: ネットワークの一時遅延で数分返らないことがある
+    - 自動 retry はしない。理由: `append` と `api` の POST は再実行で行が重複する
+    - 打ち切り後に再実行するときは、先に `get` か `meta` で結果を確認する。打ち切り後もサーバ側で処理が続くことがある
+    - 結果を確認できない `append` / `api` は再実行しない。ユーザに判断を委ねる
+    - Bash tool の timeout は 150 秒以上にする。理由: token 取得と API 通信で各 60 秒かかる
 - `set` は values の形だけ書く。range より小さい values を送っても、残りのセルは消えない
 - 消すときは `""` を送る。`null` は既存値を保持する
 - range を単一セルで渡すと、そこを左上として values の形に書く。`A1` に `[["a","b"]]` を送ると B1 も更新される

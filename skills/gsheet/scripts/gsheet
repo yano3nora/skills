@@ -112,7 +112,7 @@ sa_access_token() {
   signature="$(printf '%s' "$unsigned" | openssl dgst -sha256 -sign "$key_tmp" | base64url)" \
     || die "JWT の署名に失敗した。鍵 JSON の private_key を確認する"
   rm -f "$key_tmp"
-  response="$(printf '%s' "$unsigned.$signature" | curl -sS --fail-with-body -X POST \
+  response="$(printf '%s' "$unsigned.$signature" | curl -sS --fail-with-body --connect-timeout 10 --max-time 60 -X POST \
     --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer' \
     --data-urlencode 'assertion@-' \
     "$TOKEN_URL")" || die "token の取得に失敗した: $response"
@@ -159,6 +159,8 @@ values_body() {
 # --fail-with-body: エラー時も API の JSON を stdout に出し、非 0 で終了する。
 # 空配列の展開は ${arr[@]+"${arr[@]}"} と書く。理由: bash 3.2 は set -u で空配列の展開を unbound と扱う。
 # 割り当て先 project の header は送らない。理由: 割り当て先は鍵の project に決まり、header を送ると別途 IAM が要る。
+# --max-time で遅い通信を早く失敗させる。理由: ネットワークの一時遅延で数分返らないことがあり、Agent が待ち続ける。
+# 自動 retry はしない。理由: append や api の POST は冪等ではなく、retry で行が重複する。
 call() {
   local method="$1"
   local api_path="$2"
@@ -171,7 +173,7 @@ call() {
     extra_args=(--data-binary "$body")
   fi
 
-  curl -sS --fail-with-body -X "$method" \
+  curl -sS --fail-with-body --connect-timeout 10 --max-time 60 -X "$method" \
     -H "Authorization: Bearer $token" \
     -H "Content-Type: application/json" \
     ${extra_args[@]+"${extra_args[@]}"} \
