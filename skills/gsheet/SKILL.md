@@ -1,11 +1,13 @@
 ---
 name: gsheet
-description: Google Sheets (spreadsheet) のセルを読み書きする。「この spreadsheet を読んで / 更新して / 行を足して」と言われたら、Google Drive connector ではなく gsheet コマンドを Bash で使う。
+description: Google Sheets (spreadsheet) のセルを読み書きする CLI。Google Sheets connector が無い環境 (Codex など) で「この spreadsheet を読んで / 更新して / 行を足して」と言われたら、gsheet コマンドを Bash で使う。connector がある Claude では connector を優先する。
 ---
 
 # gsheet
 
-Google Drive connector は閲覧専用で、セル更新ができない。`gsheet` はサービスアカウントの鍵 JSON で Sheets REST API を直接叩く CLI。
+`gsheet` はサービスアカウントの鍵 JSON で Sheets REST API を直接叩く CLI。Agent の種類を問わず使える。
+Claude で Google Sheets connector が使えるなら connector を優先する。理由: 通信が 1 往復で速く、書き込みが permission の確認を通る。
+connector が無い環境や、connector がセル更新を持たない環境では `gsheet` を使う。
 
 ## 認証
 
@@ -19,7 +21,7 @@ Google Drive connector は閲覧専用で、セル更新ができない。`gshee
 
 ## 使い方
 
-`gsheet --help` を読んでから使う。出力は Sheets API の JSON そのまま。jq で整形する。
+`gsheet --help` を読んでから使う。出力は Sheets API の compact JSON そのまま。必要なら jq で絞る。
 
 ```bash
 gsheet meta   <url|id>                       # sheet 名と行列数

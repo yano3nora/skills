@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # gsheet - Google Sheets のセルをサービスアカウントの鍵で読み書きする。
-# 出力は Sheets API の JSON をそのまま stdout に出す。理由: 利用者は Agent と jq なので整形層は要らない。
+# 出力は Sheets API の JSON を compact のまま stdout に出す。理由: 利用者は Agent と jq なので整形層は要らない。
 # 認可はサービスアカウントの鍵 JSON だけ。既定は ~/.config/gsheet/key.json で、GOOGLE_APPLICATION_CREDENTIALS で上書きできる。gcloud は使わない。
 # 理由: 経路が 1 つなら Agent は迷わず、Windows でも SDK 無しで動く。
 # 初期設定は同じ skill の README.md を参照。
@@ -161,6 +161,7 @@ values_body() {
 # 割り当て先 project の header は送らない。理由: 割り当て先は鍵の project に決まり、header を送ると別途 IAM が要る。
 # --max-time で遅い通信を早く失敗させる。理由: ネットワークの一時遅延で数分返らないことがあり、Agent が待ち続ける。
 # 自動 retry はしない。理由: append や api の POST は冪等ではなく、retry で行が重複する。
+# prettyPrint=false を付ける。理由: API 既定の整形 JSON は空白で 2 倍の大きさになり、Agent の token を無駄にする。
 call() {
   local method="$1"
   local api_path="$2"
@@ -173,11 +174,14 @@ call() {
     extra_args=(--data-binary "$body")
   fi
 
+  local sep='?'
+  [[ "$api_path" == *\?* ]] && sep='&'
+
   curl -sS --fail-with-body --connect-timeout 10 --max-time 60 -X "$method" \
     -H "Authorization: Bearer $token" \
     -H "Content-Type: application/json" \
     ${extra_args[@]+"${extra_args[@]}"} \
-    "$API_BASE/$api_path"
+    "$API_BASE/$api_path${sep}prettyPrint=false"
   printf '\n'
 }
 
