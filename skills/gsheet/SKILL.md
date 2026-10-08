@@ -1,13 +1,17 @@
 ---
 name: gsheet
-description: Google Sheets (spreadsheet) のセルを読み書きする CLI。Google Sheets connector が無い環境 (Codex など) で「この spreadsheet を読んで / 更新して / 行を足して」と言われたら、gsheet コマンドを Bash で使う。connector がある Claude では connector を優先する。
+description: Google Sheets (spreadsheet) のセルを読み書きする CLI。「この spreadsheet を読んで / 更新して / 行を足して」と言われたら使う。Google Sheets connector が無い環境 (Codex など) では常に gsheet。connector がある Claude でも、スクリプトで生成した値の一括書き込みは gsheet の @file を使う。少量の手編集だけ connector でよい。
 ---
 
 # gsheet
 
 `gsheet` はサービスアカウントの鍵 JSON で Sheets REST API を直接叩く CLI。Agent の種類を問わず使える。
-Claude で Google Sheets connector が使えるなら connector を優先する。理由: 通信が 1 往復で速く、書き込みが permission の確認を通る。
-connector が無い環境や、connector がセル更新を持たない環境では `gsheet` を使う。
+Claude の Google Sheets connector とは量で使い分ける。
+
+- 数セル〜十数行の手編集は connector でよい。理由: 通信が 1 往復で速く、sandbox の遅延を受けない
+- スクリプトで生成した値の一括書き込みは `gsheet set <id> <range> @<file>` を使う。理由: connector は全セルの値を Agent が本文に書き起こすので、量に比例して token と誤記が増える
+- connector が無い環境や、connector がセル更新を持たない環境では常に `gsheet`
+- 編集者の記録が違う。`gsheet` はサービスアカウント名、connector はユーザ名で履歴に残る。人間が AI の編集を見分けたいときは `gsheet`
 
 ## 認証
 
